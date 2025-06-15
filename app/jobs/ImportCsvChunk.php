@@ -1,8 +1,12 @@
 <?php
-namespace App\Jobs;
 
-use App\Models\ImportData;
 use App\Models\ImportLog;
+use App\Models\ImportData;
+
+// ==== Load semua dependensi manual ====
+require_once __DIR__ . '/../Models/ImportLog.php';
+require_once __DIR__ . '/../Models/ImportData.php';
+require_once __DIR__ . '/../../config.php';
 
 class ImportCsvChunk
 {
@@ -44,6 +48,7 @@ class ImportCsvChunk
         while (($data = fgetcsv($handle)) !== false) {
             if (count($data) < 12)
                 continue;
+
             $batch[] = $data;
             $processed++;
 
@@ -82,4 +87,32 @@ class ImportCsvChunk
             'execution_stats' => $stats
         ]);
     }
+}
+
+// ==== CLI runner di luar class ====
+if (php_sapi_name() === 'cli' && isset($argv[1])) {
+    require_once __DIR__ . '/../Models/ImportLog.php';
+    require_once __DIR__ . '/../Models/ImportData.php';
+
+    $config = require __DIR__ . '/../../config.php';
+
+    try {
+        $pdo = new PDO(
+            'mysql:host=' . $config['db']['host'] . ';dbname=' . $config['db']['dbname'],
+            $config['db']['user'],
+            $config['db']['pass'],
+            [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
+        );
+    } catch (PDOException $e) {
+        die('DB gagal: ' . $e->getMessage());
+    }
+
+    $logId = $argv[1];
+
+    echo "Menjalankan import log ID: $logId\n";
+
+    $importer = new ImportCsvChunk($pdo, $logId);
+    $importer->handle();
+
+    echo "Import selesai.\n";
 }
