@@ -3,6 +3,7 @@ namespace App\Controllers;
 
 use App\Models\ImportLog;
 use App\Models\ImportData;
+use App\Jobs\ImportCsvChunk;
 
 class ImportController
 {
@@ -36,20 +37,13 @@ class ImportController
             return;
         }
 
-        // Hitung total baris
         $rows = count(file($path)) - 1;
-
-        // Simpan log awal
         $log = new ImportLog($this->pdo);
         $logId = $log->create($filename, $rows);
 
-        // Jalankan job di background
-        $phpPath = PHP_BINARY; // Path ke PHP CLI
-        $jobPath = escapeshellarg(__DIR__ . '/../Jobs/ImportCsvRunner.php');
-        $cmd = "$phpPath $jobPath " . escapeshellarg($logId) . " > /dev/null 2>&1 &";
-        exec($cmd); // Jalankan tanpa menunggu selesai
+        exec("php " . __DIR__ . "/../../jobs/ImportCsvChunk.php {$logId} > /dev/null 2>&1 &");
 
-        // Langsung balikan import_id ke frontend
+
         echo json_encode([
             'import_id' => $logId,
             'message' => 'Import started'
@@ -63,61 +57,39 @@ class ImportController
 
         if (!$data) {
             http_response_code(404);
-            echo json_encode(['error' => 'Import not found']);
+            echo json_encode(['error' => 'Import log not found']);
             return;
         }
 
-        // Hitung waktu eksekusi
-        $executionTime = $data['execution_time'] ?? 0;
-        $processed = $data['processed_rows'] ?? 0;
-        $total = $data['total_rows'] ?? 0;
+        $processed = (int) ($data['inserted_rows'] ?? 0);
+        $total = (int) ($data['total_rows'] ?? 0);
+        $executionStats = json_decode($data['execution_stats'] ?? '{}', true);
 
-        // Format response
-        $response = [
-            'status' => $data['status'] ?? 'unknown',
+        $averagePer100 = '-';
+        if (!empty($executionStats['execution_times'])) {
+            $times = array_column($executionStats['execution_times'], 'time');
+            if (count($times) > 0) {
+                $averagePer100 = round(array_sum($times) / count($times), 2) . ' s';
+            }
+        }
+
+        $peakMemory = '-';
+        if (!empty($executionStats['memory_usage'])) {
+            $peaks = array_column($executionStats['memory_usage'], 'memory_peak');
+            $peakMemory = round(max(array_map(fn($m) => floatval(str_replace(' MB', '', $m)), $peaks)), 2) . ' MB';
+        }
+
+        echo json_encode([
+            'status' => $data['status'],
             'processed' => $processed,
             'total' => $total,
             'stats' => [
-                'total_time' => $this->formatTime($executionTime),
-                'average_time_per_100_rows' => $processed > 0
-                    ? $this->formatTime(($executionTime / $processed) * 100)
-                    : '-',
-                'memory_usage' => $this->formatMemory(memory_get_usage()),
-                'peak_memory' => $this->formatMemory(memory_get_peak_usage())
+                'total_time' => $executionStats['total_execution_time'] ?? '-',
+                'average_time_per_100_rows' => $averagePer100,
+                'memory_usage' => '-',
+                'peak_memory' => $peakMemory,
             ]
-        ];
-
-        echo json_encode($response);
-    }
-
-    private function formatTime($seconds)
-    {
-        if ($seconds < 60) {
-            return round($seconds, 2) . ' detik';
-        }
-        $minutes = floor($seconds / 60);
-        $seconds = $seconds % 60;
-        return $minutes . ' menit ' . round($seconds, 2) . ' detik';
-    }
-
-    private function calculateAverageTime($data)
-    {
-        if (empty($data['processed_rows']) || empty($data['execution_time'])) {
-            return '-';
-        }
-        $timePer100 = ($data['execution_time'] / $data['processed_rows']) * 100;
-        return round($timePer100, 4) . ' detik';
-    }
-
-    private function formatMemory($bytes)
-    {
-        if ($bytes < 1024) {
-            return $bytes . ' bytes';
-        } elseif ($bytes < 1048576) {
-            return round($bytes / 1024, 2) . ' KB';
-        } else {
-            return round($bytes / 1048576, 2) . ' MB';
-        }
+        ]);
     }
 
     public function truncate()
